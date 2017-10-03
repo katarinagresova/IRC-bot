@@ -22,11 +22,6 @@ enum tError {
     eMESG
 };
 
-string address = "";
-string channels = "";
-string syslog = "";
-string lights = "";
-string port = "";
 char sbuf[512];
 
 const char *NICK = "xgreso00";
@@ -50,7 +45,7 @@ void printHelp();
 bool is_ipv4_address(const string& str);
 bool is_ipv6_address(const string& str);
 int connectTo(const char* addr, const char* port, int *sock);
-int talkTo(int *s);
+int talkTo(int *s, const char* channels, const char* lights);
 void raw(int *s, char *fmt, ...);
 char * timeNow();
 
@@ -63,6 +58,11 @@ char * timeNow();
 int main (int argc, char *argv[]) {
 
 	int eCode = eOK;
+  string address = "";
+  string port = "";
+  string channels = "";
+  string syslog = "";
+  string lights = "";
 
 	if (argc < 3) {
 		if (argc == 2 && ((strcmp(argv[1], "-h") == 0) || (strcmp(argv[1], "-help") == 0) || (strcmp(argv[1], "--help") == 0))) {
@@ -110,23 +110,27 @@ int main (int argc, char *argv[]) {
 	}
 
 	unsigned index;
-    if ((index = address.find(":")) != (unsigned) string::npos) {
-        port = address.substr(index + 1);
-        address = address.substr(0, index);
-    } else {
-    	port = "6667";
-    }
+  if ((index = address.find(":")) != (unsigned) string::npos) {
+      port = address.substr(index + 1);
+      address = address.substr(0, index);
+  } else {
+  	port = "6667";
+  }
+
+  //TODO:
+  //skontrolovat format channels
+  //skontrolovat format hightlights
 
 	int sock;
-    eCode = connectTo(address.c_str(), port.c_str(), &sock);
-    if (eCode != eOK) {
-        printError(eCode);
-        return eCode;
-    }
+  eCode = connectTo(address.c_str(), port.c_str(), &sock);
+  if (eCode != eOK) {
+      printError(eCode);
+      return eCode;
+  }
 
-    talkTo(&sock);
+  talkTo(&sock, channels.c_str(), lights.c_str());
 
-    return eCode;
+  return eCode;
 
 }
 
@@ -135,27 +139,28 @@ int main (int argc, char *argv[]) {
  * @param eCode error code
  */
 void printError(int eCode) {
-    if (eCode < eOK || eCode > eUNKNOWN)
-        eCode = eUNKNOWN;
+  if (eCode < eOK || eCode > eUNKNOWN) {
+    eCode = eUNKNOWN;
+  }
 
-    cerr << eMSG[eCode] << endl;
-    exit(eCode);
+  cerr << eMSG[eCode] << endl;
+  exit(eCode);
 }
 
 /**
 * Prints help
 */
 void printHelp() {
-    cout << "------------------------------------------------------------------------------------\n";
-    cout << "isabot HOST[:PORT] CHANNELS [-s SYSLOG_SERVER] [-l HIGHLIGHT] [-h|--help]\n";
+  cout << "------------------------------------------------------------------------------------\n";
+  cout << "isabot HOST[:PORT] CHANNELS [-s SYSLOG_SERVER] [-l HIGHLIGHT] [-h|--help]\n";
 	cout << "	HOST je název serveru (např. irc.freenode.net)\n";
 	cout << "	PORT je číslo portu, na kterém server naslouchá (výchozí 6667)\n";
 	cout << "	CHANNELS obsahuje název jednoho či více kanálů, na které se klient připojí (název kanálu je zadán včetně úvodního # nebo &; v případě více kanálů jsou tyto odděleny čárkou)\n";
-    cout << "   -s SYSLOG_SERVER je ip adresa logovacího (SYSLOG) serveru\n";
-    cout << "   -l HIGHLIGHT seznam klíčových slov oddělených čárkou (např. \"ip,tcp,udp,isa\")\n";
-    cout << "example:\n";
-    cout << "	isabot irc.freenode.net:6667 \"#ISAChannel,#IRC\" -s 192.168.0.1 -l \"ip,isa\"\n";
-    cout << "------------------------------------------------------------------------------------\n";
+  cout << "   -s SYSLOG_SERVER je ip adresa logovacího (SYSLOG) serveru\n";
+  cout << "   -l HIGHLIGHT seznam klíčových slov oddělených čárkou (např. \"ip,tcp,udp,isa\")\n";
+  cout << "example:\n";
+  cout << "	isabot irc.freenode.net:6667 \"#ISAChannel,#IRC\" -s 192.168.0.1 -l \"ip,isa\"\n";
+  cout << "------------------------------------------------------------------------------------\n";
 }
 
 /**
@@ -224,10 +229,7 @@ int connectTo(const char* addr, const char* port, int *sock) {
   return 0;
 }
 
-int talkTo(int *s) {
-
-
-  char *channel = "#IRC";
+int talkTo(int *s, const char* channels, const char* lights) {
 
   char *user, *command, *where, *message, *sep, *target;
   int i, j, l, sl, o = -1, start, wordcount;
@@ -272,8 +274,8 @@ int talkTo(int *s) {
 
                   if (wordcount < 2) continue;
 
-                  if (!strncmp(command, "001", 3) && channel != NULL) {
-                      raw(s, "JOIN %s\r\n", channel);
+                  if (!strncmp(command, "001", 3) && channels != NULL) {
+                      raw(s, "JOIN %s\r\n", channels);
                   } else if (!strncmp(command, "PRIVMSG", 7) || !strncmp(command, "NOTICE", 6)) {
                       if (where == NULL || message == NULL) continue;
                       if ((sep = strchr(user, '!')) != NULL) user[sep - user] = '\0';
