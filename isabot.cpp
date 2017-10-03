@@ -1,108 +1,10 @@
-#include <stdio.h>
-#include <unistd.h>
-#include <string.h>
-#include <netdb.h>
-#include <stdarg.h> 
-
-int conn;
-char sbuf[512];
-
-void raw(char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(sbuf, 512, fmt, ap);
-    va_end(ap);
-    printf("<< %s", sbuf);
-    write(conn, sbuf, strlen(sbuf));
-}
-
-int main() {
-    
-    char *nick = "test";
-    char *channel = NULL;
-    char *host = "chat.freenode.net";
-    char *port = "6667";
-    
-    char *user, *command, *where, *message, *sep, *target;
-    int i, j, l, sl, o = -1, start, wordcount;
-    char buf[513];
-    struct addrinfo hints, *res;
-    
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    getaddrinfo(host, port, &hints, &res);
-    conn = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    connect(conn, res->ai_addr, res->ai_addrlen);
-    
-    raw("USER %s 0 0 :%s\r\n", nick, nick);
-    raw("NICK %s\r\n", nick);
-    raw("JOIN %s\r\n", nick);
-    
-    while ((sl = read(conn, sbuf, 512))) {
-    	printf(">> %s", sbuf);
-        for (i = 0; i < sl; i++) {
-        	printf(">> %s", "in for");
-            o++;
-            buf[o] = sbuf[i];
-            if ((i > 0 && sbuf[i] == '\n' && sbuf[i - 1] == '\r') || o == 512) {
-                buf[o + 1] = '\0';
-                l = o;
-                o = -1;
-                
-                printf(">> %s", buf);
-                
-                if (!strncmp(buf, "PING", 4)) {
-                    buf[1] = 'O';
-                    raw(buf);
-                } else if (buf[0] == ':') {
-                    wordcount = 0;
-                    user = command = where = message = NULL;
-                    for (j = 1; j < l; j++) {
-                        if (buf[j] == ' ') {
-                            buf[j] = '\0';
-                            wordcount++;
-                            switch(wordcount) {
-                                case 1: user = buf + 1; break;
-                                case 2: command = buf + start; break;
-                                case 3: where = buf + start; break;
-                            }
-                            if (j == l - 1) continue;
-                            start = j + 1;
-                        } else if (buf[j] == ':' && wordcount == 3) {
-                            if (j < l - 1) message = buf + j + 1;
-                            break;
-                        }
-                    }
-                    
-                    if (wordcount < 2) continue;
-                    
-                    if (!strncmp(command, "001", 3) && channel != NULL) {
-                        raw("JOIN %s\r\n", channel);
-                    } else if (!strncmp(command, "PRIVMSG", 7) || !strncmp(command, "NOTICE", 6)) {
-                        if (where == NULL || message == NULL) continue;
-                        if ((sep = strchr(user, '!')) != NULL) user[sep - user] = '\0';
-                        if (where[0] == '#' || where[0] == '&' || where[0] == '+' || where[0] == '!') target = where; else target = user;
-                        printf("[from: %s] [reply-with: %s] [where: %s] [reply-to: %s] %s", user, command, where, target, message);
-                        //raw("%s %s :%s", command, target, message); // If you enable this the IRCd will get its "*** Looking up your hostname..." messages thrown back at it but it works...
-                    }
-                }
-                
-            }
-        }
-        
-    }
-    
-    return 0;
-    
-}
-
-/*#include <iostream>
+#include <iostream>
 #include <string.h>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <stdarg.h>
 
 using namespace std;
 
@@ -125,6 +27,9 @@ string channels = "";
 string syslog = "";
 string lights = "";
 string port = "";
+char sbuf[512];
+
+const char *NICK = "xgreso00";
 
 const char *eMSG[]{
         "",
@@ -146,10 +51,7 @@ bool is_ipv4_address(const string& str);
 bool is_ipv6_address(const string& str);
 int connectTo(const char* addr, const char* port, int *sock);
 int talkTo(int *s);
-bool sendData(const char *msg, int *s);
-void msgHandel(char * buf, int *s);
-bool charSearch(char *toSearch, const char *searchFor);
-void sendPong(char *buf, int *s);
+void raw(int *s, char *fmt, ...);
 char * timeNow();
 
 /**
@@ -158,7 +60,7 @@ char * timeNow();
  * @param  argv 	command line arguments
  * @return      	error code
  */
-/*int main (int argc, char *argv[]) {
+int main (int argc, char *argv[]) {
 
 	int eCode = eOK;
 
@@ -170,7 +72,7 @@ char * timeNow();
 			eCode = eARG_NUMBER;
         	printError(eCode);
         	return eCode;
-		}	
+		}
 	}
 
 	if ((argc > 7) || argc % 2 == 0) {
@@ -203,7 +105,7 @@ char * timeNow();
 				eCode = eARG;
 				printError(eCode);
 				return eCode;
-			}	
+			}
 		}
 	}
 
@@ -226,13 +128,13 @@ char * timeNow();
 
     return eCode;
 
-}	
+}
 
 /**
  * Prints error code message
  * @param eCode error code
  */
-/*void printError(int eCode) {
+void printError(int eCode) {
     if (eCode < eOK || eCode > eUNKNOWN)
         eCode = eUNKNOWN;
 
@@ -243,7 +145,7 @@ char * timeNow();
 /**
 * Prints help
 */
-/*void printHelp() {
+void printHelp() {
     cout << "------------------------------------------------------------------------------------\n";
     cout << "isabot HOST[:PORT] CHANNELS [-s SYSLOG_SERVER] [-l HIGHLIGHT] [-h|--help]\n";
 	cout << "	HOST je název serveru (např. irc.freenode.net)\n";
@@ -261,7 +163,7 @@ char * timeNow();
  * @param  str string containing address
  * @return     true, if str is valid IPv4 address, false otherwise
  */
-/*bool is_ipv4_address(const string& str) {
+bool is_ipv4_address(const string& str) {
     struct sockaddr_in sa;
     return inet_pton(AF_INET, str.c_str(), &(sa.sin_addr))!=0;
 }
@@ -271,7 +173,7 @@ char * timeNow();
  * @param  str string containing address
  * @return     true, if str is valid IPv6 address, false otherwise
  */
-/*bool is_ipv6_address(const string& str) {
+bool is_ipv6_address(const string& str) {
     struct sockaddr_in6 sa;
     return inet_pton(AF_INET6, str.c_str(), &(sa.sin6_addr))!=0;
 }
@@ -284,229 +186,125 @@ char * timeNow();
  *
  * Function contains code from getaddinfo(3) man page
  */
-/*int connectTo(const char* addr, const char* port, int *sock) {
+int connectTo(const char* addr, const char* port, int *sock) {
 
-	struct addrinfo hints;
-    struct addrinfo *result, *rp;
-    int sfd, s;
+   struct addrinfo hints;
+   struct addrinfo *result, *rp;
+   int sfd, s;
 
-    memset(&hints, 0, sizeof(struct addrinfo));
-    hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
-//    hints.ai_socktype = SOCK_DGRAM; /* Datagram socket */
- //   hints.ai_flags = 0;
- //   hints.ai_protocol = 0;          /* Any protocol */
+   memset(&hints, 0, sizeof hints);
+   hints.ai_family = AF_INET;
+   hints.ai_socktype = SOCK_STREAM;
 
- /*   s = getaddrinfo(addr, port, &hints, &result);
-    if (s != 0) {
-        return eDNS;
+   s = getaddrinfo(addr, port, &hints, &result);
+   if (s != 0) {
+     return eDNS;
+   }
+
+   for (rp = result; rp != NULL; rp = rp->ai_next) {
+     sfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+     if (sfd == -1) {
+       continue;
     }
 
-    for (rp = result; rp != NULL; rp = rp->ai_next) {
-        sfd = socket(rp->ai_family, rp->ai_socktype,
-                     rp->ai_protocol);
-        if (sfd == -1)
-            continue;
-
-       if (connect(sfd, rp->ai_addr, rp->ai_addrlen) != -1)
-            break;                  /* Success */
-
-/*       close(sfd);
+    if (connect(sfd, rp->ai_addr, rp->ai_addrlen) != -1) {
+      break;                  /* Success */
     }
 
-    if (rp == NULL) {               /* No address succeeded */
-/*        return eCONN;
-    }
+    close(sfd);
+  }
 
-    freeaddrinfo(result);
+  if (rp == NULL) {               /* No address succeeded */
+    return eCONN;
+  }
 
-    *sock = sfd;
-    return 0;
+  freeaddrinfo(result);
 
+  *sock = sfd;
+  return 0;
 }
 
 int talkTo(int *s) {
-	//Recv some data
-    int numbytes;
-    char buf[100];
- 
-    const char* nick = "NICK testBOT\r\n";
-    const char* usr = "USER guest tolmoon tolsun :Ronnie Reagan\r\n";
 
-    int count = 0;
-    while (1)
-    {
-        //declars
-        count++;
- 
-        switch (count) {
-            case 3:
-                    //after 3 recives send data to server (as per IRC protacol)
-                    sendData(nick, s);
-                    sendData(usr, s);
-                break;
-            case 4:
-                    //Join a channel after we connect, this time we choose beaker
-                sendData("JOIN #ubuntu\r\n", s);
-            default:
-                break;
-        }
- 
-        //Recv & print Data
-        numbytes = recv(*s,buf,99,0);
-        buf[numbytes]='\0';
-        cout << buf;
-        //buf is the data that is recived
- 
-        //Pass buf to the message handeler
-        msgHandel(buf, s);
- 
-        //If Ping Recived
-        /*
-         * must reply to ping overwise connection will be closed
-         * see http://www.irchelp.org/irchelp/rfc/chapter4.html
-         */
-/*        if (charSearch(buf,"PING"))
-        {
-            sendPong(buf, s);
-        }
- 
-        //break if connection closed
-        if (numbytes==0)
-        {
-            cout << "----------------------CONNECTION CLOSED---------------------------"<< endl;
-            cout << timeNow() << endl;
- 
-            break;
-        }
-    }
 
-    return 0;
+  char *channel = "#IRC";
+
+  char *user, *command, *where, *message, *sep, *target;
+  int i, j, l, sl, o = -1, start, wordcount;
+  char buf[513];
+
+  raw(s, "USER %s 0 0 :%s\r\n", NICK, NICK);
+  raw(s, "NICK %s\r\n", NICK);
+
+  while ((sl = read(*s, sbuf, 512))) {
+      for (i = 0; i < sl; i++) {
+          o++;
+          buf[o] = sbuf[i];
+          if ((i > 0 && sbuf[i] == '\n' && sbuf[i - 1] == '\r') || o == 512) {
+              buf[o + 1] = '\0';
+              l = o;
+              o = -1;
+
+              printf(">> %s", buf);
+
+              if (!strncmp(buf, "PING", 4)) {
+                  buf[1] = 'O';
+                  raw(s, buf);
+              } else if (buf[0] == ':') {
+                  wordcount = 0;
+                  user = command = where = message = NULL;
+                  for (j = 1; j < l; j++) {
+                      if (buf[j] == ' ') {
+                          buf[j] = '\0';
+                          wordcount++;
+                          switch(wordcount) {
+                              case 1: user = buf + 1; break;
+                              case 2: command = buf + start; break;
+                              case 3: where = buf + start; break;
+                          }
+                          if (j == l - 1) continue;
+                          start = j + 1;
+                      } else if (buf[j] == ':' && wordcount == 3) {
+                          if (j < l - 1) message = buf + j + 1;
+                          break;
+                      }
+                  }
+
+                  if (wordcount < 2) continue;
+
+                  if (!strncmp(command, "001", 3) && channel != NULL) {
+                      raw(s, "JOIN %s\r\n", channel);
+                  } else if (!strncmp(command, "PRIVMSG", 7) || !strncmp(command, "NOTICE", 6)) {
+                      if (where == NULL || message == NULL) continue;
+                      if ((sep = strchr(user, '!')) != NULL) user[sep - user] = '\0';
+                      if (where[0] == '#' || where[0] == '&' || where[0] == '+' || where[0] == '!') target = where; else target = user;
+                      printf("[from: %s] [reply-with: %s] [where: %s] [reply-to: %s] %s", user, command, where, target, message);
+                      //raw("%s %s :%s", command, target, message); // If you enable this the IRCd will get its "*** Looking up your hostname..." messages thrown back at it but it works...
+                  }
+              }
+
+          }
+      }
+  }
 }
 
-bool sendData(const char *msg, int *s)
-{//Send some data
-    //Send some data
-    int len = strlen(msg);
-    int bytes_sent = send(*s,msg,len,0);
- 
-    if (bytes_sent == 0)
-        return false;
-    else
-        return true;
+void raw(int *s, char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(sbuf, 512, fmt, ap);
+    va_end(ap);
+    printf("<< %s", sbuf);
+    write(*s, sbuf, strlen(sbuf));
 }
 
-void msgHandel(char * buf, int *s)
-{
-    /*
-     * TODO: add you code to respod to commands here
-     * the example below replys to the command hi scooby
-     */
-/*    if (charSearch(buf,"hi scooby"))
-    {
-        sendData("PRIVMSG #ubuntu :hi, hows it going\r\n", s);
-    }
- 
-}
-
-bool charSearch(char *toSearch, const char *searchFor)
-{
-    int len = strlen(toSearch);
-    int forLen = strlen(searchFor); // The length of the searchfor field
- 
-    //Search through each char in toSearch
-    for (int i = 0; i < len;i++)
-    {
-        //If the active char is equil to the first search item then search toSearch
-        if (searchFor[0] == toSearch[i])
-        {
-            bool found = true;
-            //search the char array for search field
-            for (int x = 1; x < forLen; x++)
-            {
-                if (toSearch[i+x]!=searchFor[x])
-                {
-                    found = false;
-                }
-            }
- 
-            //if found return true;
-            if (found == true)
-                return true;
-        }
-    }
- 
-    return 0;
-}
-
-void sendPong(char *buf, int *s)
-{
-    //Get the reply address
-    //loop through bug and find the location of PING
-    //Search through each char in toSearch
- 
-    const char * toSearch = "PING ";
- 
-    for (unsigned i = 0; i < strlen(buf);i++)
-        {
-            //If the active char is equil to the first search item then search toSearch
-            if (buf[i] == toSearch[0])
-            {
-                bool found = true;
-                //search the char array for search field
-                for (unsigned x = 1; x < 4; x++)
-                {
-                    if (buf[i+x]!=toSearch[x])
-                    {
-                        found = false;
-                    }
-                }
- 
-                //if found return true;
-                if (found == true)
-                {
-                    int count = 0;
-                    //Count the chars
-                    for (unsigned x = (i+strlen(toSearch)); x < strlen(buf);x++)
-                    {
-                        count++;
-                    }
- 
-                    //Create the new char array
-                    char returnHost[count + 5];
-                    returnHost[0]='P';
-                    returnHost[1]='O';
-                    returnHost[2]='N';
-                    returnHost[3]='G';
-                    returnHost[4]=' ';
- 
-                    count = 0;
-                    //set the hostname data
-                    for (unsigned x = (i+strlen(toSearch)); x < strlen(buf);x++)
-                    {
-                        returnHost[count+5]=buf[x];
-                        count++;
-                    }
- 
-                    //send the pong
-                    if (sendData(returnHost, s))
-                    {
-                        cout << timeNow() <<"  Ping Pong" << endl;
-                    }
- 
-                    return;
-                }
-            }
-        }
- 
-}
 
 char * timeNow()
 {//returns the current date and time
     time_t rawtime;
     struct tm * timeinfo;
- 
+
     time ( &rawtime );
     timeinfo = localtime ( &rawtime );
- 
+
     return asctime (timeinfo);
-}*/
+}
