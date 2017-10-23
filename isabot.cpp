@@ -1,90 +1,109 @@
-//TODO
-//IRC je case insensitive pri nazvoch kanalov - kanaly mam ulozene v ich lowercase verzii
-//cim je ukonceny syslog?
-//moze byt highlight aj mezera/biely znak?
-//the characters {}| are
-//   considered to be the lower case equivalents of the characters []\
-//odchytit SIGINT a ukoncit predtym spojenie so serverom
-//TODO pozriet pri ktorych spravach zacinajucich 4/5 treba ukoncit bota
-//co znamena: funkce logovat ? - ano funkce logovat -- jaaj, ?today a ?msg su funkcie
+/*
+ * ISA Projekt 2016/2017 - IRC bot s logováním SYSLOG
+ * Autor: Katarína Grešová (xgreso00)
+ * mail: xgreso00@stud.fit.vutbr.cz
+ */
 
+// used libraries
 #include <iostream>
-#include <string.h>
-#include <sys/socket.h>
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <stdarg.h>
-#include <vector>
 #include <regex>
-#include <iterator>
 #include <signal.h>
+#include <stdio.h>
 
 using namespace std;
 
-enum tError {
-    eOK = 0,
-    eARG_NUMBER,
-    eARG,
-    eADDR,
-    eCH,
-    eSOCK,
-    eDNS,
-    eCONN,
-    eSEND,
-    eRECV,
-    eMESG,
-    eSERVER,
-    eUNKNOWN
+// constants
+const char* NICK = "xgreso00";
+const char* IRC_DEFAULT_PORT = "6667";
+const char* SYSLOG_SERVER = "127.0.0.1";
+const uint16_t SYSLOG_PORT = 5140;
+const char* SYSLOG_PRI_PART = "<134>";
+const long MIN_PORT = 1;
+const long MAX_PORT = 65535;
+const char* eMSG[] {
+  "",
+  "Error: Invalid number of arguments. Rerun with -h for help.\n",
+  "Error: Invalid port number.\n",
+  "Error: Invalid channels format.\n",
+  "Error: Invalid argument. Rerun with -h for help.\n",
+  "Error: Invalid syslog server IPv4 address.\n",
+  "Error: Get host by name error.\n",
+  "Error: Can't create connection to server.\n",
+  "Error: Received error message from IRC server.\n",
+  "Error: Message received from IRC server is in invalid format.\n",
+  "",
+  "",
+
+  "Error: Something unexpected happened.\n"
 };
 
-// Global Variables
-// -- parsed input parameters
-string address;
-string port;
-string channels;
-string syslog;
-string lights;
-// -- parsed message parts
-string prefix;
-string command;
-vector<string> parameters;
-string trail;
+// global variables
 // -- connection to IRC server
 int sock;
 
-const char *NICK = "potato_";
-const char *eMSG[]{
-        "",
-        "Error: Invalid number of arguments. Rerun with -h for help.\n",
-        "Error: Invalid argument. Rerun with -h for help.\n",
-        "Error: Invalid hostname. Not valid IPv4 or IPv6 address.\n",
-        "Error: Channels are in wrong format.",
-        "Error: Can't create socket\n",
-        "Error: Get host by name error.\n",
-        "Error: Can't create connection.\n",
-        "Error: Problem while sending message to server.\n",
-        "Error: Problem while receiving message from server.\n",
-        "Error: Unknown message received from server.\n",
-        "Error:\n",
-        "Error: Received error message from server.\n"
-        "Error: Something unexpected happened.\n"
+enum tError {
+  eOK = 0,
+  eARG_NUMBER,
+  ePORT,
+  eCH,
+  eARG,
+  eSYS_SERV,
+  eDNS,
+  eCONN,
+  eSERVER,
+  eMESG,
+  eSOCK,
+  eSEND,
+
+  eUNKNOWN
 };
 
-void my_handler(int s);
+enum DecoderState {
+    PREFIX,
+    COMMAND,
+    PARAMETER
+};
+
+struct ParsedInput {
+  string address;
+  string port;
+  string channels;
+  string syslog;
+  vector<string> lights;
+};
+
+struct ParsedMsg {
+  string prefix;
+  string command;
+  vector<string> parameters;
+  string trail;
+};
+
+// function declarations
+void myHandler(int s);
 void handleError(int eCode);
+tError parseInput(int argc, char* argv[], ParsedInput* input);
 void printHelp();
-bool is_ipv4_address(const string& str);
-bool is_ipv6_address(const string& str);
-void connectTo(int *sock);
-void talkTo(int *sock);
-void parseLine(const string message);
+bool isValidPort(const char* port);
 vector<string> split(const string& str, const string& delim);
+bool isIpv4Address(const string& str);
+tError connectTo(const char* address, const char* port);
+tError talkTo(ParsedInput* input);
+void sendMsg(const char *fmt, ...);
+tError parseLine(string buf, ParsedMsg* msg);
+void fillUsers(map<string, vector<string>>* users, ParsedMsg* msg);
+string timeNow(const char* format);
+tError sendSyslog(string key, string name, string syslog_server, string trail);
+void handleTodayFunction(string channels);
+void handleMsgFunction(ParsedMsg* msg, map<string, vector<string>>* users, map<string, map<string, vector<string>>>* backlog);
+void handleJoin(ParsedMsg* msg, map<string, vector<string>>* users, map<string, map<string, vector<string>>>* backlog);
+void handleNick(ParsedMsg* msg, map<string, vector<string>>* users, map<string, map<string, vector<string>>>* backlog);
+void sendBacklog( map<string, map<string, vector<string>>>* backlog, vector<string> vector_chan, string user);
 string toLowercase(string source);
-void raw(int *s, char *fmt, ...);
-string timeNow();
-string todayTime();
-void sendSyslog(string key, string name);
 
 /**
  * Entry point
@@ -92,87 +111,39 @@ void sendSyslog(string key, string name);
  * @param  argv 	command line arguments
  * @return      	error code
  */
-int main (int argc, char *argv[]) {
+int main (int argc, char* argv[]) {
 
-  signal (SIGINT,my_handler);
+  // handling end of program with SIGINT
+  signal(SIGINT, myHandler);
 
-  // consider providing help
-  //TODO
-  //-h nebo --help se má chovat jako na linuxu? Tedy že pokud je kdekoliv za ./isabot tak se vypíše nápověda? - ano chování jako v linuxu.
-	if (argc < 3) {
-		if (argc == 2 && ((strcmp(argv[1], "-h") == 0) || (strcmp(argv[1], "--help") == 0))) {
-			printHelp();
-			handleError(eOK);
-		} else {
-      handleError(eARG_NUMBER);
-		}
-	}
+  // structure for storing parsed input arguments
+  ParsedInput input;
 
-  // number of arguments is out of allowed range
-	if ((argc > 7) || argc % 2 == 0) {
-    handleError(eARG_NUMBER);
-	}
-
-	if (argc >= 3) {
-		address = string(argv[1]);
-		channels = string(argv[2]);
-		if (argc == 5) {
-			if (strcmp(argv[3], "-s") == 0) {
-				syslog = argv[4];
-			} else if (strcmp(argv[3], "-l") == 0) {
-				lights = argv[4];
-			} else {
-				handleError(eARG);
-			}
-		} else if (argc == 7) {
-			if ((strcmp(argv[3], "-s") == 0) && (strcmp(argv[5], "-l") == 0)) {
-				syslog = argv[4];
-				lights = argv[6];
-			} else if ((strcmp(argv[3], "-l") == 0) && (strcmp(argv[5], "-s") == 0)) {
-				lights = argv[4];
-				syslog = argv[6];
-			} else {
-				handleError(eARG);
-			}
-		}
-	}
-
-	unsigned index;
-  if ((index = address.find(":")) != (unsigned) string::npos) {
-      port = address.substr(index + 1);
-      address = address.substr(0, index);
-  } else {
-  	port = "6667";
+  // parse input arguments
+  tError eCode = parseInput(argc, argv, &input);
+  if (eCode != eOK) {
+    handleError(eCode);
   }
 
-  // control format of channels
-  regex channel("(#|&)[^\x07\x2C\x20]{0,199}");
-  for (string ch : split(channels, ",")) {
-    if (!regex_match(ch, channel)) {
-      handleError(eCH);
-    }
+  // create connection with IRC server
+  eCode = connectTo(input.address.c_str(), input.port.c_str());
+  if (eCode != eOK) {
+    handleError(eCode);
   }
-  //TODO
-  //skontrolovat format syslog
-  //ak je prazdny, nastavid default
 
-  //TODO
-  //ak nie su zadane highlights, nic nelogovat
-
-  connectTo(&sock);
-  talkTo(&sock);
+  eCode = talkTo(&input);
+  if (eCode != eOK) {
+    handleError(eCode);
+  }
 
   close(sock);
   return eOK;
 
 }
 
-void my_handler(int s) {
-
-  raw(&sock, "QUIT :IRC bot stopped\r\n");
-  printf("Caught signal %d\n",s);
+void myHandler(int s) {
+  //TODO potrebujem zaslat QUIT serveru?
   handleError(eOK);
-
 }
 
 /**
@@ -186,10 +157,104 @@ void handleError(int eCode) {
   }
 
   cerr << eMSG[eCode] << endl;
-  if(sock) {
+
+  if (sock) {
     close(sock);
   }
+
   exit(eCode);
+}
+
+/**
+ * Parses input argument and stores them in structure
+ * @param  argc   number of input arguments
+ * @param  argv   array with input arguments
+ * @param  input  structure for storing parsed input arguments
+ * @return        error code
+ */
+tError parseInput(int argc, char* argv[], ParsedInput* input) {
+
+  // check, if help is requested
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+      printHelp();
+      free(input);
+      handleError(eOK);
+    }
+  }
+
+  // number of arguments is out of allowed range
+	if (argc > 7 || argc < 3 || (argc % 2 == 0)) {
+    return eARG_NUMBER;
+	}
+
+  // first argument have to be HOST[:PORT]
+  string address = string(argv[1]);
+  unsigned index;
+  if ((index = address.find(":")) != (unsigned) string::npos) {
+    string port = address.substr(index + 1);
+    if (isValidPort(port.c_str())) {
+      input->port = string(port);
+      input->address = address.substr(0, index);
+    } else {
+      return ePORT;
+    }
+  } else {
+    input->address = address;
+  	input->port = IRC_DEFAULT_PORT;
+  }
+
+  // second argument have to be CHANNELS
+  string channels = argv[2];
+  regex channel("(#|&)[^\x07\x2C\x20]{0,199}");
+  for (string ch : split(channels, ",")) {
+    if (!regex_match(ch, channel)) {
+      handleError(eCH);
+    }
+  }
+  input->channels = channels;
+
+  // looking for optional arguments
+  string syslog;
+  string lights;
+  if (argc == 5) {
+    if (strcmp(argv[3], "-s") == 0) {
+      syslog = argv[4];
+    } else if (strcmp(argv[3], "-l") == 0) {
+      lights = argv[4];
+    } else {
+      handleError(eARG);
+    }
+  } else if (argc == 7) {
+    if ((strcmp(argv[3], "-s") == 0) && (strcmp(argv[5], "-l") == 0)) {
+      syslog = argv[4];
+      lights = argv[6];
+    } else if ((strcmp(argv[3], "-l") == 0) && (strcmp(argv[5], "-s") == 0)) {
+      lights = argv[4];
+      syslog = argv[6];
+    } else {
+      handleError(eARG);
+    }
+  }
+
+  // validate optional arguments
+  // no highlights specified -> will not log -> my job in this function is done
+  if (lights.empty()) {
+    return eOK;
+  } else {
+    input->lights = split(lights, ",");
+    if (syslog.empty()) {
+      input->syslog = SYSLOG_SERVER;
+    } else {
+      if (!isIpv4Address(syslog)) {
+        return eSYS_SERV;
+      } else {
+        input->syslog = syslog;
+      }
+    }
+  }
+
+  return eOK;
 }
 
 /**
@@ -208,24 +273,47 @@ void printHelp() {
   cout << "------------------------------------------------------------------------------------\n";
 }
 
+//TODO popis
+bool isValidPort(const char* port) {
+  char *end;
+  long longPort = strtol(port, &end, 10);
+  if (longPort > MAX_PORT || longPort < MIN_PORT || *end != '\0'){
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Splits string using string dlimiter
+ * @param  str    string to split
+ * @param  delim  delimiter
+ * @return        splitted parts
+ *
+ * This function was found on https://stackoverflow.com/questions/14265581/parse-split-a-string-in-c-using-string-delimiter-standard-c
+ */
+vector<string> split(const string& str, const string& delim) {
+    vector<string> tokens;
+    size_t prev = 0, pos = 0;
+    do
+    {
+        pos = str.find(delim, prev);
+        if (pos == string::npos) pos = str.length();
+        string token = str.substr(prev, pos-prev);
+        if (!token.empty()) tokens.push_back(token);
+        prev = pos + delim.length();
+    }
+    while (pos < str.length() && prev < str.length());
+    return tokens;
+}
+
 /**
  * Check if given address is valid IPv4 address
  * @param  str string containing address
  * @return     true, if str is valid IPv4 address, false otherwise
  */
-bool is_ipv4_address(const string& str) {
+bool isIpv4Address(const string& str) {
     struct sockaddr_in sa;
-    return inet_pton(AF_INET, str.c_str(), &(sa.sin_addr))!=0;
-}
-
-/**
- * Check if given address is valid IPv6 address
- * @param  str string containing address
- * @return     true, if str is valid IPv6 address, false otherwise
- */
-bool is_ipv6_address(const string& str) {
-    struct sockaddr_in6 sa;
-    return inet_pton(AF_INET6, str.c_str(), &(sa.sin6_addr))!=0;
+    return inet_pton(AF_INET, str.c_str(), &(sa.sin_addr)) != 0;
 }
 
 /**
@@ -236,301 +324,457 @@ bool is_ipv6_address(const string& str) {
  *
  * Function contains code from getaddinfo(3) man page
  */
-void connectTo(int *sock) {
+tError connectTo(const char* address, const char* port) {
 
-   struct addrinfo hints;
-   struct addrinfo *result, *rp;
-   int sfd, s;
+  struct addrinfo hints;
+  struct addrinfo *result, *rp;
+  int sfd, s;
 
-   memset(&hints, 0, sizeof hints);
-   hints.ai_family = AF_INET;
-   hints.ai_socktype = SOCK_STREAM;
+  memset(&hints, 0, sizeof hints);
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
 
-   s = getaddrinfo(address.c_str(), port.c_str(), &hints, &result);
-   if (s != 0) {
-     handleError(eDNS);
-   }
+  s = getaddrinfo(address, port, &hints, &result);
+  if (s != 0) {
+    return eDNS;
+  }
 
-   for (rp = result; rp != NULL; rp = rp->ai_next) {
-     sfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-     if (sfd == -1) {
-       continue;
+  for (rp = result; rp != NULL; rp = rp->ai_next) {
+    sfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+    if (sfd == -1) {
+      continue;
     }
 
     if (connect(sfd, rp->ai_addr, rp->ai_addrlen) != -1) {
       break;
     }
-
     close(sfd);
   }
 
   if (rp == NULL) {
-    handleError(eCONN);
+    return eCONN;
   }
 
   freeaddrinfo(result);
-
-  *sock = sfd;
+  sock = sfd;
+  return eOK;
 }
 
-void talkTo(int *sock) {
+/**
+ *
+ *
+ * Main loop of this function is from https://gist.github.com/codeniko/c3f0c7d1399bac66d821
+ */
+tError talkTo(ParsedInput* input) {
 
-  char *user, *where, *message, *sep, *target;
-  int i, j, l, sl, o = -1, start, wordcount;
+  int i, sl, o = -1;
   char sbuf[512];
   char buf[513];
-  // map<user, vector<channel>>
   map<string, vector<string>> users;
-  // map<user, map<channel, vector<message>>>
   map<string, map<string, vector<string>>> backlog;
 
-  vector<string> keys = split(lights, ",");
+  sendMsg("USER %s %s %s :%s\r\n", NICK, NICK, NICK, NICK);
+  sendMsg("NICK %s\r\n", NICK);
 
-  raw(sock, "USER %s %s %s :%s\r\n", NICK, NICK, NICK, NICK);
-  raw(sock, "NICK %s\r\n", NICK);
+  while ((sl = read(sock, sbuf, 512))) {
+    for (i = 0; i < sl; i++) {
+      o++;
+      buf[o] = sbuf[i];
+      if ((i > 0 && sbuf[i] == '\n' && sbuf[i - 1] == '\r') || o == 512) {
+        buf[o + 1] = '\0';
+        o = -1;
 
-  while ((sl = read(*sock, sbuf, 512))) {
-      for (i = 0; i < sl; i++) {
-          o++;
-          buf[o] = sbuf[i];
-          if ((i > 0 && sbuf[i] == '\n' && sbuf[i - 1] == '\r') || o == 512) {
-              buf[o + 1] = '\0';
-              l = o;
-              o = -1;
+        //TODO odstranit na zaver
+        printf(">> %s", buf);
 
-              printf(">> %s", buf);
-              parseLine(string(buf));
+        // structure for storing parsed message from IRC server
+        ParsedMsg msg;
+        tError eCode = parseLine(string(buf), &msg);
+        if (eCode != eOK) {
+          return eCode;
+        }
 
-              if(command.compare("001") == 0) {
-                  raw(sock, "JOIN %s\r\n", channels.c_str());
+        // time to join channels
+        if(msg.command.compare("001") == 0) {
+          sendMsg("JOIN %s\r\n", input->channels.c_str());
 
-              // RPL_NAMREPLY - info about users on channels
-              } else if (command.compare("353") == 0) {
-                // get users
-                vector<string> trail_users = split(trail, " ");
-                // get channel for those users + lower it for case insensitive search
-                string chan = toLowercase(parameters[2]);
-                for (string user : trail_users) {
-                  if (user[0] == '@' || user[0] == '+') {
-                    user = user.substr(1);
-                  }
-                  // user is not stored - create new entry
-                  if (users.find(user) == users.end()) {
-                    vector<string> vector_chan;
-                    vector_chan.push_back(chan);
-                    users.insert(pair<string, vector<string>>(user, vector_chan));
-                  // user is already stored - add channel to his channels
-                  } else {
-                    users[user].push_back(chan);
-                  }
-                }
+        // RPL_NAMREPLY - info about users on channels
+        } else if (msg.command.compare("353") == 0) {
+          fillUsers(&users, &msg);
 
-                //print stored users in channels
-                cout << "POVODNY STAV: \n";
-                for (pair<string, vector<string>> room : users) {
-                  cout << room.first << endl;
-                  for (string person: room.second) {
-                    cout << person << ",";
-                  }
-                  cout << endl;
-                }
+        // some error message from IRC server
+        } else if (msg.command[0] == '4' || msg.command[0] == '5') {
+          sendMsg("QUIT :IRC bot ending\r\n");
+          return eSERVER;
 
-              } else if (command[0] == '4' || command[0] == '5') {
-                raw(&sock, "QUIT :IRC bot ending\r\n");
-                handleError(eSERVER);
-              }
+        // testing active presence
+        } else if (msg.command.compare("PING") == 0) {
+          buf[1] = 'O';
+          sendMsg(buf);
 
-              } else if (command.compare("PING") == 0) {
-                buf[1] = 'O';
-                raw(sock, buf);
-              } else if (command.compare("NOTICE") == 0 || command.compare("PRIVMSG") == 0) {
-                  // see, if we need to log this message
-                  vector<string> words = split(trail, " ");
-                  for(string word : words) {
-                    for(string key: keys) {
-                      if (word.compare(key) == 0) {
-                        // log only messages with nickname
-                        if (!prefix.empty()) {
-                          sendSyslog(key, prefix.substr(0, prefix.find("!")));
-                        }
-                      }
-                    }
-                  }
-
-                  if (command.compare("PRIVMSG") == 0) {
-                    //TODO
-                    // look for ?today and ?msg
-                    // ?today odosle cas stroja, kde bezi bot
-
-                    //sprava musi obsahovat iba toto slovo, inak sa to nepovazuje za spravne volanie funkcie
-                    if (trail.compare("?today") == 0) {
-                      vector<string> target_chan;
-                      // get all target channels
-                      for (string ch : split(parameters[0], ",")) {
-                        if (ch[0] == '#' || ch[0] == '&') {
-                          target_chan.push_back(ch);
-                        }
-                      }
-                      for(string ch : target_chan) {
-                        raw(sock, "PRIVMSG %s :%s\r\n", ch.c_str(), todayTime().c_str());
-                      }
-                    } else if (strncmp(trail.c_str(), "?msg", 4) == 0) {
-                      string chan = parameters[0];
-                      if ((chan[0] == '#' || chan[0] == '&') && chan.find(',') == string::npos) {
-                        string second = split(trail, " ")[1];
-                        int pos = second.find(':');
-                        if (pos != string::npos) {
-                          string name = second.substr(0, pos);
-                          string msg = second.substr(pos + 1);
-
-                          bool send = false;
-                          if (users.find(name) != users.end()) {
-                            vector<string> vector_chan = users.find(name)->second;
-                            if (find(vector_chan.begin(), vector_chan.end(), toLowercase(chan)) != vector_chan.end()) {
-                              raw(sock, "PRIVMSG %s :%s:%s\r\n", chan.c_str(), name.c_str(), msg.c_str());
-                              send = true;
-                            }
-                          }
-
-                          if(!send) {
-                            // there is no message stored for this user
-                            if (backlog.find(name) == backlog.end()) {
-                              vector<string> vector_msg;
-                              vector_msg.push_back(msg);
-                              map<string, vector<string>> map_chan;
-                              map_chan.insert(pair<string, vector<string>>(toLowercase(chan), vector_msg));
-                              backlog.insert(pair<string, map<string, vector<string>>>(name, map_chan));
-                            } else {
-                              // there is message for this user, but not for this channel
-                              if(backlog[name].find(toLowercase(chan)) == backlog[name].end()) {
-                                vector<string> vector_msg;
-                                vector_msg.push_back(msg);
-                                backlog[name].insert(pair<string, vector<string>>(toLowercase(chan), vector_msg));
-                              // there is message for this user on this channel
-                              } else {
-                                backlog[name][toLowercase(chan)].push_back(msg);
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-
-              } else if (command.compare("JOIN") == 0) {
-                string user = prefix.substr(0, prefix.find("!"));
-
-                // to prevent double storing my channels
-                if(user.comapre(NICK) != 0) {
-                  vector<string> vector_chan = split(toLowercase(parameters[0]), ",");
-
-                  if (users.find(user) == users.end()) {
-                    users.insert(pair<string, vector<string>>(user, vector_chan));
-                  } else {
-                    for (string chan : vector_chan) {
-                      users[user].push_back(chan);
-                    }
-                  }
-
-                  //print stored users in channels
-                  cout << "PO JOIN STAV: \n";
-                  for (pair<string, vector<string>> room : users) {
-                    cout << room.first << endl;
-                    for (string person: room.second) {
-                      cout << person << ",";
-                    }
-                    cout << endl;
-                  }
-
-                  if (backlog.find(user) != backlog.end()) {
-                    for (string ch : vector_chan) {
-                      if(backlog[user].find(ch) != backlog[user].end()) {
-                        // send all messages for user on channel
-                        for (string m : backlog[user][ch]) {
-                          raw(sock, "PRIVMSG %s :%s:%s\r\n", ch.c_str(), user.c_str(), m.c_str());
-                        }
-                        // delete send messages
-                        backlog[user].erase(ch);
-                        if (backlog.find(user)->second.size() == 0) {
-                          backlog.erase(user);
-                        }
-                      }
-                    }
-                  }
-                }
-              } else if (command.compare("PART") == 0) {
-                vector<string> vector_chan = split(toLowercase(parameters[0]), ",");
-                string user = prefix.substr(0, prefix.find("!"));
-
-                for (string chan : vector_chan) {
-                  users.find(user)->second.erase(remove(users.find(user)->second.begin(), users.find(user)->second.end(), chan), users.find(user)->second.end());
-                  if (users.find(user)->second.size() == 0) {
-                    users.erase(user);
-                  }
-                }
-
-                //print stored users in channels
-                cout << "PO PART STAV: \n";
-                for (pair<string, vector<string>> room : users) {
-                  cout << room.first << endl;
-                  for (string person: room.second) {
-                    cout << person << ",";
-                  }
-                  cout << endl;
-                }
-              } else if (command.compare("KICK") == 0) {
-                vector<string> vector_chan = split(toLowercase(parameters[0]), ",");
-                vector<string> vector_user = split(parameters[1], ",");
-
-                //TODO osetrovat, ci ten user a channel je v mojom zozname?
-                for (string user: vector_user) {
-                  for (string chan : vector_chan) {
-                    users.find(user)->second.erase(remove(users.find(user)->second.begin(), users.find(user)->second.end(), chan), users.find(user)->second.end());
-                    if (users.find(user)->second.size() == 0) {
-                      users.erase(user);
-                    }
-                  }
-                }
-              }  else if (command.compare("QUIT") == 0) {
-                users.erase(parameters[0]);
-              } else if (command.compare("NICK") == 0) {
-                string oldName = prefix.substr(0, prefix.find("!"));
-                string user = trail;
-
-                vector<string> old = users[oldName];
-                users.insert(pair<string, vector<string>>(user, old));
-                users.erase(oldName);
-
-                //print stored users in channels
-                cout << "PO NICK STAV: \n";
-                for (pair<string, vector<string>> room : users) {
-                  cout << room.first << endl;
-                  for (string person: room.second) {
-                    cout << person << ",";
-                  }
-                  cout << endl;
-                }
-
-                //TODO skontrolovat, ci nemam pre tohto usera nejaku spravu
-                vector<string> vector_chan = users[user];
-                if (backlog.find(user) != backlog.end()) {
-                  for (string ch : vector_chan) {
-                    if(backlog[user].find(ch) != backlog[user].end()) {
-                      // send all messages for user on channel
-                      for (string m : backlog[user][ch]) {
-                        raw(sock, "PRIVMSG %s :%s:%s\r\n", ch.c_str(), user.c_str(), m.c_str());
-                      }
-                      // delete send messages
-                      backlog[user].erase(ch);
-                      if (backlog.find(user)->second.size() == 0) {
-                        backlog.erase(user);
-                      }
+        // messages for users - some logic is the same
+        } else if (msg.command.compare("NOTICE") == 0 || msg.command.compare("PRIVMSG") == 0) {
+          // see, if we need to log this message - highlight are present and match message
+          if (input->lights.size() != 0) {
+            vector<string> words = split(msg.trail, " ");
+            for(string word : words) {
+              for(string light: input->lights) {
+                if (word.compare(light) == 0) {
+                  // log only messages with nickname
+                  if (!msg.prefix.empty()) {
+                    eCode = sendSyslog(light, msg.prefix.substr(0, msg.prefix.find("!")), input->syslog, msg.trail);
+                    if (eCode != eOK) {
+                      return eCode;
                     }
                   }
                 }
               }
+            }
           }
+
+          // PRIVMSG might contains supported functions
+          if (msg.command.compare("PRIVMSG") == 0) {
+
+            // ?today function was used
+            if (msg.trail.compare("?today") == 0) {
+              handleTodayFunction(msg.parameters[0]);
+
+            // ?msg function was used
+          } else if (strncmp(msg.trail.c_str(), "?msg", 4) == 0) {
+              handleMsgFunction(&msg, &users, &backlog);
+
+            }
+          }
+
+        // new user joined channel
+        } else if (msg.command.compare("JOIN") == 0) {
+            handleJoin(&msg, &users, &backlog);
+
+        // user left channel
+        } else if (msg.command.compare("PART") == 0) {
+          vector<string> vector_chan = split(toLowercase(msg.parameters[0]), ",");
+          string user = msg.prefix.substr(0, msg.prefix.find("!"));
+
+          for (string chan : vector_chan) {
+            users.find(user)->second.erase(remove(users.find(user)->second.begin(), users.find(user)->second.end(), chan), users.find(user)->second.end());
+            if (users.find(user)->second.size() == 0) {
+              users.erase(user);
+            }
+          }
+
+        // user was kicked out
+        } else if (msg.command.compare("KICK") == 0) {
+          vector<string> vector_chan = split(toLowercase(msg.parameters[0]), ",");
+          vector<string> vector_user = split(msg.parameters[1], ",");
+
+          for (string user: vector_user) {
+            for (string chan : vector_chan) {
+              users.find(user)->second.erase(remove(users.find(user)->second.begin(), users.find(user)->second.end(), chan), users.find(user)->second.end());
+              if (users.find(user)->second.size() == 0) {
+                users.erase(user);
+              }
+            }
+          }
+
+        // user completely ended connection
+        } else if (msg.command.compare("QUIT") == 0) {
+          users.erase(msg.parameters[0]);
+
+        // user changed nickname
+        } else if (msg.command.compare("NICK") == 0) {
+          handleNick(&msg, &users, &backlog);
+
+        }
       }
+    }
+  }
+  return eOK;
+}
+
+/**
+ * Sends message to IRC server
+ * @param ftm   format string
+ * @param ...   variables used in format string
+ *
+ * This function was found on https://gist.github.com/codeniko/c3f0c7d1399bac66d821
+ */
+void sendMsg(const char *fmt, ...) {
+  char sbuf[512];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(sbuf, 512, fmt, ap);
+  va_end(ap);
+  //TODO odstranit vypis na zaver
+  printf("<< %s", sbuf);
+  write(sock, sbuf, strlen(sbuf));
+}
+
+/**
+ * Parses message from IRC server into multiple parts
+ * @param  buf    message from IRC server
+ * @param  msg    structure for storing message parts
+ * @return        error code
+ *
+ * This is modified version of function from https://studiofreya.com/2015/06/27/a-simple-modern-irc-client-library-in-cpp-part-1-the-parser/
+ */
+tError parseLine(string buf, ParsedMsg* msg) {
+
+  if (buf.empty()) {
+    return eMESG;
+  }
+
+  // remove \r\n
+  string message = buf.substr(0, buf.length() - 2);
+
+  // Parameters are between command and trail
+  auto trailDivider = message.find(" :");
+  bool haveTrailDivider = trailDivider != message.npos;
+
+  // Assemble outputs
+  vector<string> parts;
+
+  // With or without trail
+  if (haveTrailDivider) {
+    // Have trail, split by trail
+    string uptotrail = message.substr(0, trailDivider);
+    msg->trail = message.substr(trailDivider + 2);
+    parts = split(uptotrail, " ");
+  } else {
+    // No trail, everything are parameters
+    parts = split(message, " ");
+  }
+
+  DecoderState state = PREFIX;
+  bool first = true;
+
+  for (const string part : parts) {
+    switch (state) {
+      // Prefix, or command... have to be decided
+      case PREFIX:
+      case COMMAND: {
+        // Prefix, aka origin of message
+        bool havePrefix = part[0] == ':';
+
+        if (havePrefix && first) {
+          // Oh the sanity
+          if (part.size() < 2) {
+              return eMESG;
+          }
+
+          // Have prefix
+          state = COMMAND;
+          msg->prefix = part.substr(1);
+          first = false;
+        } else {
+          // Have command
+          state = PARAMETER;
+          msg->command = part;
+        }
+        break;
+      }
+      case PARAMETER: {
+        msg->parameters.push_back(part);
+        break;
+      }
+    }
+  }
+  return eOK;
+}
+
+/**
+ * Inserts information about users and channels they are on into structure
+ * @param users   structure for storing users and channels
+ * @param msg     message from IRC server with code 353
+ */
+void fillUsers(map<string, vector<string>>* users, ParsedMsg* msg) {
+  //get channel - storing in lowercase for case insensitive comparing
+  string chan = toLowercase(msg->parameters[2]);
+
+  //get users
+  vector<string> trail_users = split(msg->trail, " ");
+
+  for(string user : trail_users) {
+    // remove optional prefix
+    if (user[0] == '@' || user[0] == '+') {
+      user = user.substr(1);
+    }
+
+    // user is not stored - create new entry
+    if (users->find(user) == users->end()) {
+      vector<string> vector_chan;
+      vector_chan.push_back(chan);
+      users->insert(pair<string, vector<string>>(user, vector_chan));
+    // user is already stored - add channel to his channels
+    } else {
+      (*users)[user].push_back(chan);
+    }
+  }
+}
+
+/**
+ * Returns current date and time in given format
+ * @param  format   required format
+ * @return          current date and time in given format
+ */
+string timeNow(const char* format) {
+    char buff[20];
+    struct tm *sTm;
+
+    time_t now = time (0);
+    sTm = gmtime (&now);
+
+    strftime (buff, sizeof(buff), format, sTm);
+
+    return string(buff);
+}
+
+
+tError sendSyslog(string key, string name, string syslog_server, string trail) {
+
+  struct sockaddr_in si_other;
+  int s, slen=sizeof(si_other);
+
+  if ( (s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1) {
+      return eSOCK;
+  }
+
+  memset((char *) &si_other, 0, sizeof(si_other));
+  si_other.sin_family = AF_INET;
+  si_other.sin_port = htons(SYSLOG_PORT);
+
+  if (inet_aton(syslog_server.c_str(), &si_other.sin_addr) == 0) {
+      return eDNS;
+  }
+
+  //TODO zatial mi to vzdy vrati 127.0.0.1 - je to vpohode?
+  //TODO moze tam byt <134> napevno?
+
+  string msg = string(SYSLOG_PRI_PART) + timeNow("%b %m %H:%M:%S") + " " + inet_ntoa(si_other.sin_addr) + " " + key + " " + name + ": " + trail;
+
+  //send the message
+  //TODO pozriet, ci strlen nebude robit problemy
+  if (sendto(s, msg.c_str(), msg.length() , 0 , (struct sockaddr *) &si_other, slen)==-1) {
+      return eSEND;
+  }
+
+  return eOK;
+}
+
+void handleTodayFunction(string channels) {
+  vector<string> target_chan;
+  // get all target channels
+  for (string ch : split(channels, ",")) {
+    if (ch[0] == '#' || ch[0] == '&') {
+      target_chan.push_back(ch);
+    }
+  }
+  // send current date on all channels
+  for(string ch : target_chan) {
+    sendMsg("PRIVMSG %s :%s\r\n", ch.c_str(), timeNow("%d.%m.%Y").c_str());
+  }
+}
+
+void handleMsgFunction(ParsedMsg* msg, map<string, vector<string>>* users, map<string, map<string, vector<string>>>* backlog) {
+  // get channel
+  string chan = msg->parameters[0];
+  // verify, there is only one channel
+  if ((chan[0] == '#' || chan[0] == '&') && chan.find(',') == string::npos) {
+
+    // get real message - part after ?msg
+    string second = split(msg->trail, " ")[1];
+    unsigned pos = (unsigned)second.find(':');
+
+    // message have to be in format nickname:message
+    if (pos != string::npos) {
+      string name = second.substr(0, pos);
+      string m = second.substr(pos + 1);
+
+      bool send = false;
+      if (users->find(name) != users->end()) {
+        vector<string> vector_chan = users->find(name)->second;
+
+        // user is online on channel - we can send message
+        if (find(vector_chan.begin(), vector_chan.end(), toLowercase(chan)) != vector_chan.end()) {
+          sendMsg("PRIVMSG %s :%s:%s\r\n", chan.c_str(), name.c_str(), m.c_str());
+          send = true;
+        }
+      }
+
+      // user is not online on channel - we will store message
+      if(!send) {
+        // there are no messages stored for this user
+        if (backlog->find(name) == backlog->end()) {
+          vector<string> vector_msg;
+          vector_msg.push_back(m);
+          map<string, vector<string>> map_chan;
+          map_chan.insert(pair<string, vector<string>>(toLowercase(chan), vector_msg));
+          backlog->insert(pair<string, map<string, vector<string>>>(name, map_chan));
+        } else {
+          // there is message for this user, but not for this channel
+          if((*backlog)[name].find(toLowercase(chan)) == (*backlog)[name].end()) {
+            vector<string> vector_msg;
+            vector_msg.push_back(m);
+            (*backlog)[name].insert(pair<string, vector<string>>(toLowercase(chan), vector_msg));
+          // there is message for this user on this channel
+          } else {
+            (*backlog)[name][toLowercase(chan)].push_back(m);
+          }
+        }
+      }
+    }
+  }
+}
+
+void handleJoin(ParsedMsg* msg, map<string, vector<string>>* users, map<string, map<string, vector<string>>>* backlog) {
+  // get user
+  string user = msg->prefix.substr(0, msg->prefix.find("!"));
+  // to prevent double storing my channels
+  if(user.compare(NICK) != 0) {
+    vector<string> vector_chan = split(toLowercase(msg->parameters[0]), ",");
+
+    // this user is not stored yet - create new entry
+    if (users->find(user) == users->end()) {
+      users->insert(pair<string, vector<string>>(user, vector_chan));
+    // this user is stored - append new channels
+    } else {
+      for (string chan : vector_chan) {
+        (*users)[user].push_back(chan);
+      }
+    }
+
+    // check, if we have stored some messages for this user
+    if (backlog->find(user) != backlog->end()) {
+      sendBacklog(backlog, vector_chan, user);
+    }
+  }
+}
+
+void handleNick(ParsedMsg* msg, map<string, vector<string>>* users, map<string, map<string, vector<string>>>* backlog) {
+  string oldName = msg->prefix.substr(0, msg->prefix.find("!"));
+  string user = msg->trail;
+
+  vector<string> old = (*users)[oldName];
+  users->insert(pair<string, vector<string>>(user, old));
+  users->erase(oldName);
+
+  if (backlog->find(user) != backlog->end()) {
+    sendBacklog(backlog, (*users)[user], user);
+  }
+}
+
+void sendBacklog( map<string, map<string, vector<string>>>* backlog, vector<string> vector_chan, string user) {
+  for (string ch : vector_chan) {
+    if((*backlog)[user].find(ch) != (*backlog)[user].end()) {
+      // send all messages for user on channel
+      for (string m : (*backlog)[user][ch]) {
+        sendMsg("PRIVMSG %s :%s:%s\r\n", ch.c_str(), user.c_str(), m.c_str());
+      }
+      // delete send messages
+      (*backlog)[user].erase(ch);
+      if (backlog->find(user)->second.size() == 0) {
+        backlog->erase(user);
+      }
+    }
   }
 }
 
@@ -540,244 +784,4 @@ string toLowercase(string source) {
     outcome.push_back((char)tolower(c));
   }
   return outcome;
-}
-
-void raw(int *s, char *fmt, ...) {
-    char sbuf[512];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(sbuf, 512, fmt, ap);
-    va_end(ap);
-    printf("<< %s", sbuf);
-    write(*s, sbuf, strlen(sbuf));
-}
-
-void parseLine(const string msg)
-  {
-      //if (message.empty())
-      //{
-        //TODO
-          // Garbage in, garbage out
-        //  return IrcMessage();
-      //}
-
-      // https://tools.ietf.org/html/rfc1459	-- Original specification
-      // https://tools.ietf.org/html/rfc2810	-- Architecture specfication
-      // https://tools.ietf.org/html/rfc2811	-- Channel specification
-      // https://tools.ietf.org/html/rfc2812	-- Client specification
-      // https://tools.ietf.org/html/rfc2813	-- Server specification
-      //
-      // <message>  ::= [':' <prefix> <SPACE> ] <command> <params> <crlf>
-      // <prefix>   ::= <servername> | <nick> [ '!' <user> ] [ '@' <host> ]
-      // <command>  ::= <letter> { <letter> } | <number> <number> <number>
-      // <SPACE>    ::= ' ' { ' ' }
-      // <params>   ::= <SPACE> [ ':' <trailing> | <middle> <params> ]
-      //
-      // <middle>   ::= <Any *non-empty* sequence of octets not including SPACE
-      //                or NUL or CR or LF, the first of which may not be ':'>
-      // <trailing> ::= <Any, possibly *empty*, sequence of octets not including
-      //                  NUL or CR or LF>
-      //
-      // <crlf>     ::= CR LF
-
-      // reset global variables before parsing
-      prefix = "";
-      command = "";
-      parameters.clear();
-      trail = "";
-      //remove \r\n
-      string message = msg.substr(0, msg.length() - 2);
-
-      // Parameters are between command and trail
-      auto trailDivider = message.find(" :");
-      bool haveTrailDivider = trailDivider != message.npos;
-
-      // Assemble outputs
-      vector<string> parts;
-
-      // With or without trail
-      if (haveTrailDivider)
-      {
-          // Have trail, split by trail
-          string uptotrail = message.substr(0, trailDivider);
-          trail = message.substr(trailDivider + 2);
-          parts = split(uptotrail, " ");
-      }
-      else
-      {
-          // No trail, everything are parameters
-          parts = split(message, " ");
-      }
-
-      enum class DecoderState
-      {
-          PREFIX,
-          COMMAND,
-          PARAMETER
-      } state;
-
-      bool first = true;
-      state = DecoderState::PREFIX;
-
-      for (const string part : parts)
-      {
-
-          switch (state)
-          {
-              // Prefix, or command... have to be decided
-              case DecoderState::PREFIX:
-              case DecoderState::COMMAND:
-              {
-                  // Prefix, aka origin of message
-                  bool havePrefix = part[0] == ':';
-
-                  if (havePrefix && first)
-                  {
-                      // Oh the sanity
-                      if (part.size() < 2)
-                      {
-                          //TODO
-                          //return IrcMessage();
-                      }
-
-                      // Have prefix
-                      state = DecoderState::COMMAND;
-                      prefix = part.substr(1);
-                      first = false;
-                  }
-                  else
-                  {
-                      // Have command
-                      state = DecoderState::PARAMETER;
-                      command = part;
-                  }
-
-                  break;
-              }
-              case DecoderState::PARAMETER:
-              {
-                  parameters.push_back(part);
-                  break;
-              }
-          }
-
-      }
-
-
-      //cout << "PREFIX: " << prefix << "\n";
-      //cout << "COMMAND: " << command << "\n";
-      //cout << "PARAMETERS: ";
-      //for (auto const& c : parameters)
-        //std::cout << c << ' ';
-      //cout << "\nTRAILS: " << trail << "\n";
-
-      // Construct an IrcMessage
-      //IrcMessage ircmsg(command, prefix, std::move(parameters), trail);
-      //m_Handles(ircmsg);
-
-      //return ircmsg;
-  }
-
-//https://stackoverflow.com/questions/14265581/parse-split-a-string-in-c-using-string-delimiter-standard-c
-  vector<string> split(const string& str, const string& delim)
-  {
-      vector<string> tokens;
-      size_t prev = 0, pos = 0;
-      do
-      {
-          pos = str.find(delim, prev);
-          if (pos == string::npos) pos = str.length();
-          string token = str.substr(prev, pos-prev);
-          if (!token.empty()) tokens.push_back(token);
-          prev = pos + delim.length();
-      }
-      while (pos < str.length() && prev < str.length());
-      return tokens;
-  }
-
-
-string timeNow()
-{//returns the current date and time
-    /*time_t rawtime;
-    struct tm * timeinfo;
-
-    time ( &rawtime );
-    timeinfo = localtime ( &rawtime );
-
-    return asctime (timeinfo);*/
-    char buff[20];
-    struct tm *sTm;
-
-    time_t now = time (0);
-    sTm = gmtime (&now);
-
-    strftime (buff, sizeof(buff), "%b %m %H:%M:%S", sTm);
-
-    return string(buff);
-    //printf ("%s %s\n", buff, "Event occurred now");
-
-}
-
-string todayTime()
-{//returns the current date and time
-    /*time_t rawtime;
-    struct tm * timeinfo;
-
-    time ( &rawtime );
-    timeinfo = localtime ( &rawtime );
-
-    return asctime (timeinfo);*/
-    char buff[20];
-    struct tm *sTm;
-
-    time_t now = time (0);
-    sTm = gmtime (&now);
-
-    strftime (buff, sizeof(buff), "%d.%m.%Y", sTm);
-
-    return string(buff);
-    //printf ("%s %s\n", buff, "Event occurred now");
-
-}
-
-void sendSyslog(string key, string name) {
-  cout << "______________\n||logujem||\n_____________";
-  //TODO vytvarat spojenie pre kazdu spravu zvlast?
-  //cim ma byt ukoncena sprava?
-
-  const int BUFLEN = 1025;
-  //TODO nezabudnut upravit port
-  const int PORT = 5140;
-  struct sockaddr_in si_other;
-  int s, i, slen=sizeof(si_other);
-  char buf[BUFLEN];
-
-  if ( (s=socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
-  {
-      handleError(eSOCK);
-  }
-
-  memset((char *) &si_other, 0, sizeof(si_other));
-  si_other.sin_family = AF_INET;
-  si_other.sin_port = htons(PORT);
-
-  if (inet_aton(syslog.c_str(), &si_other.sin_addr) == 0)
-  {
-      handleError(eDNS);
-  }
-
-  //TODO zatial mi to vzdy vrati 127.0.0.1 - je to vpohode?
-  //TODO moze tam byt <134> napevno?
-
-  string msg = "<134>" + timeNow() + " " + inet_ntoa(si_other.sin_addr) + " " + key + " " + name + ": "+ trail;
-
-  //send the message
-  //TODO pozriet, ci strlen nebude robit problemy
-  if (sendto(s, msg.c_str(), msg.length() , 0 , (struct sockaddr *) &si_other, slen)==-1)
-  {
-      handleError(eSEND);
-  }
-
-
-
 }
