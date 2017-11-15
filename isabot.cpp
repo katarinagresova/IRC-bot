@@ -1,6 +1,5 @@
-//TODO little and big endian
 /*
- * ISA Projekt 2016/2017 - IRC bot s logováním SYSLOG
+ * ISA Projekt 2017/2018 - IRC bot s logováním SYSLOG
  * Autor: Katarína Grešová (xgreso00)
  * mail: xgreso00@stud.fit.vutbr.cz
  */
@@ -14,11 +13,15 @@
 #include <regex>
 #include <signal.h>
 #include <stdio.h>
+#include <net/if.h>
+#include <sys/ioctl.h>
+#include <linux/if_link.h>
+#include <ifaddrs.h>
 
 using namespace std;
 
 // constants
-const char* NICK = "xgreso00_";
+const char* NICK = "xgreso00";
 const char* IRC_DEFAULT_PORT = "6667";
 const char* SYSLOG_SERVER = "127.0.0.1";
 const uint16_t SYSLOG_PORT = 5140;
@@ -103,6 +106,7 @@ void handleJoin(ParsedMsg* msg, map<string, vector<string>>* users, map<string, 
 void handleNick(ParsedMsg* msg, map<string, vector<string>>* users, map<string, map<string, vector<string>>>* backlog);
 void sendBacklog( map<string, map<string, vector<string>>>* backlog, vector<string> vector_chan, string user);
 string toLowercase(string source);
+string getMyIP();
 
 /**
  * Entry point
@@ -663,7 +667,7 @@ string timeNow(const char* format) {
 tError sendSyslog(string key, string name, string syslog_server, string trail) {
 
   struct sockaddr_in si_other;
-  int s, slen=sizeof(si_other);
+  int s, slen = sizeof(si_other);
 
   if ( (s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1) {
       return eSOCK;
@@ -678,13 +682,13 @@ tError sendSyslog(string key, string name, string syslog_server, string trail) {
   }
 
   //TODO zatial mi to vzdy vrati 127.0.0.1 - je to vpohode?
-  //TODO moze tam byt <134> napevno?
 
-  string msg = string(SYSLOG_PRI_PART) + timeNow("%b %m %H:%M:%S") + " " + inet_ntoa(si_other.sin_addr) + " " + key + " " + name + ": " + trail;
+  string myIP = getMyIP();
+  cout << "|||||||||||||||||||||||||||||||IP: "  << myIP << endl;
+  string msg = string(SYSLOG_PRI_PART) + timeNow("%b %m %H:%M:%S") + " " + myIP + " " + key + " " + name + ": " + trail;
 
   //send the message
-  //TODO pozriet, ci strlen nebude robit problemy
-  if (sendto(s, msg.c_str(), msg.length() , 0 , (struct sockaddr *) &si_other, slen)==-1) {
+  if (sendto(s, msg.c_str(), msg.length() , 0 , (struct sockaddr *) &si_other, slen) == -1) {
       return eSEND;
   }
 
@@ -855,4 +859,47 @@ string toLowercase(string source) {
     outcome.push_back((char)tolower(c));
   }
   return outcome;
+}
+
+//GETIFADDRS(3)
+string getMyIP() {
+  struct ifaddrs *ifaddr, *ifa;
+  int family, s, n;
+  char host[NI_MAXHOST];
+
+  if (getifaddrs(&ifaddr) == -1) {
+    //perror("getifaddrs");
+    //exit(EXIT_FAILURE);
+    //TODO error
+  }
+
+  /* Walk through linked list, maintaining head pointer so we can free list later */
+  for (ifa = ifaddr, n = 0; ifa != NULL; ifa = ifa->ifa_next, n++) {
+    if (ifa->ifa_addr == NULL) {
+      continue;
+    }
+
+    family = ifa->ifa_addr->sa_family;
+
+    /* For an AF_INET* interface address, display the address */
+    if (family == AF_INET || family == AF_INET6) {
+      s = getnameinfo(ifa->ifa_addr,
+                     (family == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6),
+                     host, NI_MAXHOST,
+                     NULL, 0, NI_NUMERICHOST);
+
+      if (s != 0) {
+        //printf("getnameinfo() failed: %s\n", gai_strerror(s));
+        //exit(EXIT_FAILURE);
+        //TODO error
+      }
+
+      if (strcmp(host, "127.0.0.1") != 0 ) {
+        break;
+      }
+    }
+  }
+
+  freeifaddrs(ifaddr);
+  return string(host);
 }
