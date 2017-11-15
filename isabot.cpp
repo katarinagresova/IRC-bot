@@ -1,3 +1,4 @@
+//TODO little and big endian
 /*
  * ISA Projekt 2016/2017 - IRC bot s logováním SYSLOG
  * Autor: Katarína Grešová (xgreso00)
@@ -17,7 +18,7 @@
 using namespace std;
 
 // constants
-const char* NICK = "xgreso00";
+const char* NICK = "xgreso00_";
 const char* IRC_DEFAULT_PORT = "6667";
 const char* SYSLOG_SERVER = "127.0.0.1";
 const uint16_t SYSLOG_PORT = 5140;
@@ -35,9 +36,8 @@ const char* eMSG[] {
   "Error: Can't create connection to server.\n",
   "Error: Received error message from IRC server.\n",
   "Error: Message received from IRC server is in invalid format.\n",
-  "",
-  "",
-
+  "Error: Can't create socket\n",
+  "Error: Problem while sending message to server.\n",
   "Error: Something unexpected happened.\n"
 };
 
@@ -58,7 +58,6 @@ enum tError {
   eMESG,
   eSOCK,
   eSEND,
-
   eUNKNOWN
 };
 
@@ -141,8 +140,14 @@ int main (int argc, char* argv[]) {
 
 }
 
+/**
+ * Handles interupts
+ * @param  s    received signal
+ */
 void myHandler(int s) {
-  //TODO potrebujem zaslat QUIT serveru?
+  if (sock) {
+    sendMsg("QUIT :IRC bot stopped\r\n");
+  }
   handleError(eOK);
 }
 
@@ -273,7 +278,11 @@ void printHelp() {
   cout << "------------------------------------------------------------------------------------\n";
 }
 
-//TODO popis
+/**
+ * Checks if value is valid port number
+ * @param  port   value to validate
+ * @return        true, if value is valid port number, false otherwise
+ */
 bool isValidPort(const char* port) {
   char *end;
   long longPort = strtol(port, &end, 10);
@@ -361,8 +370,9 @@ tError connectTo(const char* address, const char* port) {
 }
 
 /**
- *
- *
+ * Handles communication with IRC server
+ * @param  input    parsed inpur arguments
+ * @return          error code
  * Main loop of this function is from https://gist.github.com/codeniko/c3f0c7d1399bac66d821
  */
 tError talkTo(ParsedInput* input) {
@@ -373,8 +383,8 @@ tError talkTo(ParsedInput* input) {
   map<string, vector<string>> users;
   map<string, map<string, vector<string>>> backlog;
 
-  sendMsg("USER %s %s %s :%s\r\n", NICK, NICK, NICK, NICK);
   sendMsg("NICK %s\r\n", NICK);
+  sendMsg("USER %s %s %s :%s\r\n", NICK, NICK, NICK, NICK);
 
   while ((sl = read(sock, sbuf, 512))) {
     for (i = 0; i < sl; i++) {
@@ -432,6 +442,14 @@ tError talkTo(ParsedInput* input) {
             }
           }
 
+          // there can be ERROR message encapsulated inside NOTICE message
+          if (msg.command.compare("NOTICE") == 0) {
+            if (strncmp(msg.trail.c_str(), "ERROR", 5) == 0) {
+              sendMsg("QUIT :IRC bot ending\r\n");
+              return eSERVER;
+            }
+          }
+
           // PRIVMSG might contains supported functions
           if (msg.command.compare("PRIVMSG") == 0) {
 
@@ -440,7 +458,7 @@ tError talkTo(ParsedInput* input) {
               handleTodayFunction(msg.parameters[0]);
 
             // ?msg function was used
-          } else if (strncmp(msg.trail.c_str(), "?msg", 4) == 0) {
+            } else if (strncmp(msg.trail.c_str(), "?msg", 4) == 0) {
               handleMsgFunction(&msg, &users, &backlog);
 
             }
@@ -478,7 +496,12 @@ tError talkTo(ParsedInput* input) {
 
         // user completely ended connection
         } else if (msg.command.compare("QUIT") == 0) {
-          users.erase(msg.parameters[0]);
+          // QUIT message was for me
+          if (msg.prefix.substr(0, msg.prefix.find("!")).compare(NICK) == 0) {
+            return eSERVER;
+          } else {
+            users.erase(msg.parameters[0]);
+          }
 
         // user changed nickname
         } else if (msg.command.compare("NICK") == 0) {
@@ -486,6 +509,8 @@ tError talkTo(ParsedInput* input) {
 
         }
       }
+
+      //TODO aj KILL?
     }
   }
   return eOK;
@@ -628,7 +653,14 @@ string timeNow(const char* format) {
     return string(buff);
 }
 
-
+/**
+ * Sends syslog message
+ * @param key             highlight, which was matched
+ * @param name            nickname of user, who send matched message
+ * @param syslog_server   address of syslog server
+ * @param trail           message to log
+ * @return                erro code
+ */
 tError sendSyslog(string key, string name, string syslog_server, string trail) {
 
   struct sockaddr_in si_other;
@@ -660,6 +692,10 @@ tError sendSyslog(string key, string name, string syslog_server, string trail) {
   return eOK;
 }
 
+/**
+ * Sends current date to specified channels
+ * @param  channels   target channels
+ */
 void handleTodayFunction(string channels) {
   vector<string> target_chan;
   // get all target channels
@@ -674,6 +710,12 @@ void handleTodayFunction(string channels) {
   }
 }
 
+/** Sends message to channel if user is there, store message to backlog otherwise
+ *
+ * @param  msg      parsed message from IRC server
+ * @param  users    users on channels
+ * @param  backlog  all stored messages
+ */
 void handleMsgFunction(ParsedMsg* msg, map<string, vector<string>>* users, map<string, map<string, vector<string>>>* backlog) {
   // get channel
   string chan = msg->parameters[0];
@@ -725,6 +767,12 @@ void handleMsgFunction(ParsedMsg* msg, map<string, vector<string>>* users, map<s
   }
 }
 
+/**
+ * Adds new user and his channels to users, sends stored messages if necessary
+ * @param  msg      parsed message from IRC server
+ * @param  users    users on channels
+ * @param  backlog  all stored messages
+ */
 void handleJoin(ParsedMsg* msg, map<string, vector<string>>* users, map<string, map<string, vector<string>>>* backlog) {
   // get user
   string user = msg->prefix.substr(0, msg->prefix.find("!"));
@@ -749,20 +797,39 @@ void handleJoin(ParsedMsg* msg, map<string, vector<string>>* users, map<string, 
   }
 }
 
+/**
+ * Rename user name is users
+ * @param  msg      parsed message from IRC server
+ * @param  users    users on channels
+ * @param  backlog  all stored messages
+ */
 void handleNick(ParsedMsg* msg, map<string, vector<string>>* users, map<string, map<string, vector<string>>>* backlog) {
+
+  // get old name
   string oldName = msg->prefix.substr(0, msg->prefix.find("!"));
+  // get new name
   string user = msg->trail;
 
+  // store channels
   vector<string> old = (*users)[oldName];
+  // insert channels under new user name
   users->insert(pair<string, vector<string>>(user, old));
+  // delete old user entry
   users->erase(oldName);
 
+  // check, if we have stored some messages for this user
   if (backlog->find(user) != backlog->end()) {
     sendBacklog(backlog, (*users)[user], user);
   }
 }
 
-void sendBacklog( map<string, map<string, vector<string>>>* backlog, vector<string> vector_chan, string user) {
+/**
+ * Sends stored messages to given user on given channels
+ * @param  backlog      all stored messages
+ * @param  vector_chan  channels, user is connected to
+ * @param  user         nickname of user to send messages to
+ */
+void sendBacklog(map<string, map<string, vector<string>>>* backlog, vector<string> vector_chan, string user) {
   for (string ch : vector_chan) {
     if((*backlog)[user].find(ch) != (*backlog)[user].end()) {
       // send all messages for user on channel
@@ -778,6 +845,11 @@ void sendBacklog( map<string, map<string, vector<string>>>* backlog, vector<stri
   }
 }
 
+/**
+ * Converts string to lowercase
+ * @param  source   string to convert
+ * @return          string converted to lowercase
+ */
 string toLowercase(string source) {
   string outcome;
   for (char c : source) {

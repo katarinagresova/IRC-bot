@@ -1,0 +1,36 @@
+Programování síťové služby - IRC bot s logováním SYSLOG
+ISA, FIT VUT Brno 2017/2018
+
+Autor: Katarína Grešová, xgreso00@stud.fit.vutbr.cz
+
+Popis: Program pracuje ako IRC klient s niekoľkými špecifickými rozšíreniami.
+Medzi rozšírenia patrí logovanie správ NOTICE a PRIVMSG, ktoré obsahujú
+jedno zo zadaných kľúčových slov. Ďalej sú podporované funkcie ?msg a ?today
+v správach PRIVMSG. Funkcia ?msg (formát: ?msg <nickname>:<msg>) odošle
+užívateľovi správu na daný kanál (v prípade neprítomnosti užívateľa mu ju
+odošle po pripojení na kanál). Funkcia ?today pošle na kanál správu s aktuálnym
+dátumom.
+
+Zoznam súborov:
+  Makefile
+  manual.pdf
+  README
+  isabot.cpp
+
+Makefile:
+  spustiteľný program sa vytvorí príkazom make
+
+Preklad:
+  g++ -std=c++11 -o isabot -g -Werror -Wall -pedantic isabot.cpp
+
+Spusteni:
+  ./isabot HOST[:PORT] CHANNELS [-s SYSLOG_SERVER] [-l HIGHLIGHT] [-h|--help]
+    - HOST              názov IRC serveru
+    - PORT              číslo portu, na ktorom serve počúva (predvolený je 6667)
+    - CHANNELS          názov jedného kanálu (prípadne viacerých kanálov),
+                        na ktorý sa klient pripojí
+    - -s SYSLOG_SERVER  IP adresa logovacieho serveru
+    - -l HIGHLIGHT      zoznam kľúcových slov oddelených čiarkov
+
+Príklad použitia:
+  ./isabot irc.freenode.net:6667 "#ISAChannel,#IRC" -s 192.168.0.1 -l "ip,isa"
