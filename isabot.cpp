@@ -24,8 +24,9 @@ using namespace std;
 const char* NICK = "xgreso00";
 const char* IRC_DEFAULT_PORT = "6667";
 const char* SYSLOG_SERVER = "127.0.0.1";
-const uint16_t SYSLOG_PORT = 5140;
+const uint16_t SYSLOG_PORT = 514;
 const char* SYSLOG_PRI_PART = "<134>";
+const char* SYSLOG_MY_NAME = "isabot";
 const long MIN_PORT = 1;
 const long MAX_PORT = 65535;
 const char* eMSG[] {
@@ -99,7 +100,7 @@ void sendMsg(const char *fmt, ...);
 tError parseLine(string buf, ParsedMsg* msg);
 void fillUsers(map<string, vector<string>>* users, ParsedMsg* msg);
 string timeNow(const char* format);
-tError sendSyslog(string key, string name, string syslog_server, string trail);
+tError sendSyslog(string name, string syslog_server, string trail);
 void handleTodayFunction(string channels);
 void handleMsgFunction(ParsedMsg* msg, map<string, vector<string>>* users, map<string, map<string, vector<string>>>* backlog);
 void handleJoin(ParsedMsg* msg, map<string, vector<string>>* users, map<string, map<string, vector<string>>>* backlog);
@@ -388,6 +389,7 @@ tError talkTo(ParsedInput* input) {
 
   sendMsg("NICK %s\r\n", NICK);
   sendMsg("USER %s %s %s :%s\r\n", NICK, NICK, NICK, NICK);
+  sendMsg("JOIN %s\r\n", input->channels.c_str());
 
   while ((sl = read(sock, sbuf, 512))) {
     for (i = 0; i < sl; i++) {
@@ -407,12 +409,8 @@ tError talkTo(ParsedInput* input) {
           return eCode;
         }
 
-        // time to join channels
-        if(msg.command.compare("001") == 0) {
-          sendMsg("JOIN %s\r\n", input->channels.c_str());
-
         // RPL_NAMREPLY - info about users on channels
-        } else if (msg.command.compare("353") == 0) {
+        if (msg.command.compare("353") == 0) {
           fillUsers(&users, &msg);
 
         // some error message from IRC server
@@ -427,6 +425,7 @@ tError talkTo(ParsedInput* input) {
 
         // messages for users - some logic is the same
         } else if (msg.command.compare("NOTICE") == 0 || msg.command.compare("PRIVMSG") == 0) {
+          bool send = false;
           // see, if we need to log this message - highlight are present and match message
           if (input->lights.size() != 0) {
             vector<string> words = split(msg.trail, " ");
@@ -435,12 +434,17 @@ tError talkTo(ParsedInput* input) {
                 if (word.compare(light) == 0) {
                   // log only messages with nickname
                   if (!msg.prefix.empty()) {
-                    eCode = sendSyslog(light, msg.prefix.substr(0, msg.prefix.find("!")), input->syslog, msg.trail);
+                    eCode = sendSyslog(msg.prefix.substr(0, msg.prefix.find("!")), input->syslog, msg.trail);
                     if (eCode != eOK) {
                       return eCode;
                     }
+                    send = true;
+                    break;
                   }
                 }
+              }
+              if (send) {
+                break;
               }
             }
           }
@@ -499,11 +503,22 @@ tError talkTo(ParsedInput* input) {
 
         // user completely ended connection
         } else if (msg.command.compare("QUIT") == 0) {
+          string user = msg.prefix.substr(0, msg.prefix.find("!"));
           // QUIT message was for me
-          if (msg.prefix.substr(0, msg.prefix.find("!")).compare(NICK) == 0) {
+          if (user.compare(NICK) == 0) {
             return eSERVER;
           } else {
-            users.erase(msg.parameters[0]);
+            users.erase(user);
+          }
+
+        // user completely ended connection
+        } else if (msg.command.compare("KILL") == 0) {
+          string user = msg.prefix.substr(0, msg.prefix.find("!"));
+          // QUIT message was for me
+          if (user.compare(NICK) == 0) {
+            return eSERVER;
+          } else {
+            users.erase(user);
           }
 
         // user changed nickname
@@ -658,13 +673,12 @@ string timeNow(const char* format) {
 
 /**
  * Sends syslog message
- * @param key             highlight, which was matched
  * @param name            nickname of user, who send matched message
  * @param syslog_server   address of syslog server
  * @param trail           message to log
  * @return                erro code
  */
-tError sendSyslog(string key, string name, string syslog_server, string trail) {
+tError sendSyslog(string name, string syslog_server, string trail) {
 
   struct sockaddr_in si_other;
   int s, slen = sizeof(si_other);
@@ -684,8 +698,7 @@ tError sendSyslog(string key, string name, string syslog_server, string trail) {
   //TODO zatial mi to vzdy vrati 127.0.0.1 - je to vpohode?
 
   string myIP = getMyIP();
-  cout << "|||||||||||||||||||||||||||||||IP: "  << myIP << endl;
-  string msg = string(SYSLOG_PRI_PART) + timeNow("%b %m %H:%M:%S") + " " + myIP + " " + key + " " + name + ": " + trail;
+  string msg = string(SYSLOG_PRI_PART) + timeNow("%b %m %H:%M:%S") + " " + myIP + " " + SYSLOG_MY_NAME + " " + name + ":" + trail;
 
   //send the message
   if (sendto(s, msg.c_str(), msg.length() , 0 , (struct sockaddr *) &si_other, slen) == -1) {
@@ -726,43 +739,47 @@ void handleMsgFunction(ParsedMsg* msg, map<string, vector<string>>* users, map<s
   if ((chan[0] == '#' || chan[0] == '&') && chan.find(',') == string::npos) {
 
     // get real message - part after ?msg
-    string second = split(msg->trail, " ")[1];
-    unsigned pos = (unsigned)second.find(':');
+    unsigned pos = (unsigned)msg->trail.find(' ');
+    string second = msg->trail.substr(pos + 1);
 
+    pos = (unsigned)second.find(':');
     // message have to be in format nickname:message
     if (pos != string::npos) {
       string name = second.substr(0, pos);
       string m = second.substr(pos + 1);
 
-      bool send = false;
-      if (users->find(name) != users->end()) {
-        vector<string> vector_chan = users->find(name)->second;
+      // empty message is not valid -> do not send
+      if (m.length() > 0) {
+        bool send = false;
+        if (users->find(name) != users->end()) {
+          vector<string> vector_chan = users->find(name)->second;
 
-        // user is online on channel - we can send message
-        if (find(vector_chan.begin(), vector_chan.end(), toLowercase(chan)) != vector_chan.end()) {
-          sendMsg("PRIVMSG %s :%s:%s\r\n", chan.c_str(), name.c_str(), m.c_str());
-          send = true;
+          // user is online on channel - we can send message
+          if (find(vector_chan.begin(), vector_chan.end(), toLowercase(chan)) != vector_chan.end()) {
+            sendMsg("PRIVMSG %s :%s:%s\r\n", chan.c_str(), name.c_str(), m.c_str());
+            send = true;
+          }
         }
-      }
 
-      // user is not online on channel - we will store message
-      if(!send) {
-        // there are no messages stored for this user
-        if (backlog->find(name) == backlog->end()) {
-          vector<string> vector_msg;
-          vector_msg.push_back(m);
-          map<string, vector<string>> map_chan;
-          map_chan.insert(pair<string, vector<string>>(toLowercase(chan), vector_msg));
-          backlog->insert(pair<string, map<string, vector<string>>>(name, map_chan));
-        } else {
-          // there is message for this user, but not for this channel
-          if((*backlog)[name].find(toLowercase(chan)) == (*backlog)[name].end()) {
+        // user is not online on channel - we will store message
+        if(!send) {
+          // there are no messages stored for this user
+          if (backlog->find(name) == backlog->end()) {
             vector<string> vector_msg;
             vector_msg.push_back(m);
-            (*backlog)[name].insert(pair<string, vector<string>>(toLowercase(chan), vector_msg));
-          // there is message for this user on this channel
+            map<string, vector<string>> map_chan;
+            map_chan.insert(pair<string, vector<string>>(toLowercase(chan), vector_msg));
+            backlog->insert(pair<string, map<string, vector<string>>>(name, map_chan));
           } else {
-            (*backlog)[name][toLowercase(chan)].push_back(m);
+            // there is message for this user, but not for this channel
+            if((*backlog)[name].find(toLowercase(chan)) == (*backlog)[name].end()) {
+              vector<string> vector_msg;
+              vector_msg.push_back(m);
+              (*backlog)[name].insert(pair<string, vector<string>>(toLowercase(chan), vector_msg));
+            // there is message for this user on this channel
+            } else {
+              (*backlog)[name][toLowercase(chan)].push_back(m);
+            }
           }
         }
       }
