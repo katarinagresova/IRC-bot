@@ -42,6 +42,7 @@ const char* eMSG[] {
   "Error: Message received from IRC server is in invalid format.\n",
   "Error: Can't create socket\n",
   "Error: Problem while sending message to server.\n",
+  "Error: Problem while finding IP address for this device.\n"
   "Error: Something unexpected happened.\n"
 };
 
@@ -62,6 +63,7 @@ enum tError {
   eMESG,
   eSOCK,
   eSEND,
+  eMYIP,
   eUNKNOWN
 };
 
@@ -166,7 +168,7 @@ void handleError(int eCode) {
     eCode = eUNKNOWN;
   }
 
-  cerr << eMSG[eCode] << endl;
+  cerr << eMSG[eCode];
 
   if (sock) {
     close(sock);
@@ -389,7 +391,6 @@ tError talkTo(ParsedInput* input) {
 
   sendMsg("NICK %s\r\n", NICK);
   sendMsg("USER %s %s %s :%s\r\n", NICK, NICK, NICK, NICK);
-  sendMsg("JOIN %s\r\n", input->channels.c_str());
 
   while ((sl = read(sock, sbuf, 512))) {
     for (i = 0; i < sl; i++) {
@@ -399,9 +400,6 @@ tError talkTo(ParsedInput* input) {
         buf[o + 1] = '\0';
         o = -1;
 
-        //TODO odstranit na zaver
-        printf(">> %s", buf);
-
         // structure for storing parsed message from IRC server
         ParsedMsg msg;
         tError eCode = parseLine(string(buf), &msg);
@@ -409,8 +407,12 @@ tError talkTo(ParsedInput* input) {
           return eCode;
         }
 
+        // time to join channels
+        if(msg.command.compare("001") == 0) {
+          sendMsg("JOIN %s\r\n", input->channels.c_str());
+
         // RPL_NAMREPLY - info about users on channels
-        if (msg.command.compare("353") == 0) {
+        } else if (msg.command.compare("353") == 0) {
           fillUsers(&users, &msg);
 
         // some error message from IRC server
@@ -501,18 +503,8 @@ tError talkTo(ParsedInput* input) {
             }
           }
 
-        // user completely ended connection
-        } else if (msg.command.compare("QUIT") == 0) {
-          string user = msg.prefix.substr(0, msg.prefix.find("!"));
-          // QUIT message was for me
-          if (user.compare(NICK) == 0) {
-            return eSERVER;
-          } else {
-            users.erase(user);
-          }
-
-        // user completely ended connection
-        } else if (msg.command.compare("KILL") == 0) {
+        // user completely ended connection OR user was killed
+      } else if (msg.command.compare("QUIT") == 0 || msg.command.compare("KILL") == 0) {
           string user = msg.prefix.substr(0, msg.prefix.find("!"));
           // QUIT message was for me
           if (user.compare(NICK) == 0) {
@@ -527,8 +519,6 @@ tError talkTo(ParsedInput* input) {
 
         }
       }
-
-      //TODO aj KILL?
     }
   }
   return eOK;
@@ -547,8 +537,6 @@ void sendMsg(const char *fmt, ...) {
   va_start(ap, fmt);
   vsnprintf(sbuf, 512, fmt, ap);
   va_end(ap);
-  //TODO odstranit vypis na zaver
-  printf("<< %s", sbuf);
   write(sock, sbuf, strlen(sbuf));
 }
 
@@ -695,9 +683,11 @@ tError sendSyslog(string name, string syslog_server, string trail) {
       return eDNS;
   }
 
-  //TODO zatial mi to vzdy vrati 127.0.0.1 - je to vpohode?
-
   string myIP = getMyIP();
+  if (myIP == null) {
+    return eMYIP;
+  }
+
   string msg = string(SYSLOG_PRI_PART) + timeNow("%b %m %H:%M:%S") + " " + myIP + " " + SYSLOG_MY_NAME + " " + name + ":" + trail;
 
   //send the message
@@ -878,16 +868,19 @@ string toLowercase(string source) {
   return outcome;
 }
 
-//GETIFADDRS(3)
+/**
+ * Get IP address of current device
+ * @return        first found IP address after loopback
+ *
+ * Function contains code from getifaddrs(3) man page
+ */
 string getMyIP() {
   struct ifaddrs *ifaddr, *ifa;
   int family, s, n;
   char host[NI_MAXHOST];
 
   if (getifaddrs(&ifaddr) == -1) {
-    //perror("getifaddrs");
-    //exit(EXIT_FAILURE);
-    //TODO error
+    return null;
   }
 
   /* Walk through linked list, maintaining head pointer so we can free list later */
@@ -906,9 +899,7 @@ string getMyIP() {
                      NULL, 0, NI_NUMERICHOST);
 
       if (s != 0) {
-        //printf("getnameinfo() failed: %s\n", gai_strerror(s));
-        //exit(EXIT_FAILURE);
-        //TODO error
+        return null;
       }
 
       if (strcmp(host, "127.0.0.1") != 0 ) {

@@ -30,7 +30,7 @@ Spusteni:
     - CHANNELS          názov jedného kanálu (prípadne viacerých kanálov),
                         na ktorý sa klient pripojí
     - -s SYSLOG_SERVER  IP adresa logovacieho serveru
-    - -l HIGHLIGHT      zoznam kľúcových slov oddelených čiarkov
+    - -l HIGHLIGHT      zoznam kľúčových slov oddelených čiarkov
 
 Príklad použitia:
   ./isabot irc.freenode.net:6667 "#ISAChannel,#IRC" -s 192.168.0.1 -l "ip,isa"
