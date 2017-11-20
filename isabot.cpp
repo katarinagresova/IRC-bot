@@ -684,7 +684,7 @@ tError sendSyslog(string name, string syslog_server, string trail) {
   }
 
   string myIP = getMyIP();
-  if (myIP == null) {
+  if (myIP.empty()) {
     return eMYIP;
   }
 
@@ -880,7 +880,7 @@ string getMyIP() {
   char host[NI_MAXHOST];
 
   if (getifaddrs(&ifaddr) == -1) {
-    return null;
+    return string();
   }
 
   /* Walk through linked list, maintaining head pointer so we can free list later */
@@ -899,7 +899,7 @@ string getMyIP() {
                      NULL, 0, NI_NUMERICHOST);
 
       if (s != 0) {
-        return null;
+        return string();
       }
 
       if (strcmp(host, "127.0.0.1") != 0 ) {
